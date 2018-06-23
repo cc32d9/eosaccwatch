@@ -73,8 +73,8 @@ This is the most tricky part: the script needs to be able to send email
 that is not rreated as spam by recipients. The general recommendations
 are as follows:
 
-* The server's IPv4 and IPv6 addresses need reverse DNS record, and this
-  record should not contain any keywords like ppp, adsl, docsis,
+* The server's IPv4 and IPv6 addresses need reverse DNS records, and
+  these records should not contain any keywords like ppp, adsl, docsis,
   dynamic.
 
 * The sender's email address should have a valid domain name. The best
@@ -100,3 +100,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+
+## Donations and paid service
+
+ETH address: `0x7137bfe007B15F05d3BF7819d28419EAFCD6501E`
+
+EOS account: `cc32dninexxx`
+
+You can send me equivalent of US$100 per account, and I will set up the
+watching service for you for 10 years.
