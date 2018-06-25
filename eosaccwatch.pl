@@ -183,6 +183,13 @@ foreach my $entry (@Conf::watchlist)
         next;
     }
 
+    # https://github.com/EOSIO/eos/issues/4319
+    # don't know why, but "elapsed" is varying in time
+    foreach my $action (@{$data->{'actions'}})
+    {
+        delete $action->{'action_trace'}{'elapsed'};
+    }
+        
     my $jscontent = $jswriter->encode($data->{'actions'});
     my $jscontent_sha = sha256_hex($jscontent);
     
