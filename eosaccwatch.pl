@@ -52,7 +52,7 @@ $Conf::n_receive_transactions = 20;
 $Conf::smtp_host = 'localhost';
 $Conf::smtp_port = 25;
 $Conf::smtp_from = 'eosaddrwatch@example.com';
-
+$Conf::use_git = 0;
 
 if( not -r $cfgfile )
 {
@@ -216,7 +216,50 @@ foreach my $entry (@Conf::watchlist)
     $fh->close();
 }
 
+
+if( $Conf::use_git )
+{
+    my $ok = 1;
+    chdir($Conf::workdir);
+    if( not -d '.git' )
+    {
+        my $cmd = 'git init';
+        verbose("Executing: $cmd");
+        my $r = system($cmd);
+        if( $r != 0 )
+        {
+            $ok = 0;
+            error('Error executing $cmd: ' . $!);
+        }
+    }
+
+    if( $ok )
+    {
+        my $cmd = 'git add --all';
+        verbose("Executing: $cmd");
+        my $r = system($cmd);
+        if( $r != 0 )
+        {
+            $ok = 0;
+            error('Error executing $cmd: ' . $!);
+        }
+    }
     
+    if( $ok )
+    {
+        my $timestr = scalar(localtime(time()));
+        my $cmd = sprintf('git commit -m "%s" --author "%s <%s>" 1>/dev/null',
+                          $timestr, 'eosaccwatch', $Conf::smtp_from);
+        verbose("Executing: $cmd");
+        my $r = system($cmd);
+    }
+
+    exit(1) unless $ok;
+}
+
+
+
+
 sub notify_owner
 {
     my $entry = shift;
