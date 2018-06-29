@@ -322,64 +322,77 @@ sub notify_owner
     my $account = $entry->{'account_name'};
     if( defined($entry->{'notify_email'}) )
     {
-        my $mailto = $entry->{'notify_email'};
-        verbose("Sending a notification to $mailto");
-
-        my $body = join
-            ("\n",
-             'There are ' . scalar(@{$actions}) .
-             ' new transactions for account ' . $account . ':',
-             '', '');
-        
-        foreach my $action (@{$actions})
+        my @tos;
+        if( ref($entry->{'notify_email'}) eq 'ARRAY' )
         {
-            my $text = '';
-            foreach my $attr ('account_action_seq', 'block_time')
-            {
-                $text .= sprintf("%s: %s\n", $attr, $action->{$attr});
-            }
-
-            my $at = $action->{'action_trace'};
-            my $act = $at->{'act'};
-            
-            $text .= sprintf("%s: %s\n", 'trx_id', $at->{'trx_id'});
-
-            $text .= sprintf("%s::%s => %s\n", $act->{'account'},
-                             $act->{'name'},
-                             $at->{'receipt'}{'receiver'});
-
-            $text .= $jswriter->encode($act->{'data'}) . "\n";
-
-            $body .= $text . "\n";
+            push(@tos, @{$entry->{'notify_email'}});
         }
-             
-        my $message = Email::MIME->create(
-            header_str => [
-                From => $Conf::smtp_from,
-                To => $mailto,
-                Subject => 'New transactions for ' . $account,
-            ],
-            parts => [ $body ],
-            );
+        else
+        {
+            push(@tos, $entry->{'notify_email'});
+        }
 
-        my $outfile = $Conf::workdir . '/' . $account . '_email_' . time();
-        my $fh = IO::File->new($outfile, 'w') or
-            die("Cannot write to $outfile: $!");
-        $fh->print($message->as_string());
-        $fh->close();
-        verbose("Saved a copy to $outfile");
+        foreach my $mailto (@tos)
+        {
+            verbose("Sending a notification to $mailto");
 
-        sendmail(
-            $message,
+            my $body = join
+                ("\n",
+                 'There are ' . scalar(@{$actions}) .
+                 ' new transactions for account ' . $account . ':',
+                 '', '');
+            
+            foreach my $action (@{$actions})
             {
-                from => $Conf::smtp_from,
-                to => $mailto,
-                transport => Email::Sender::Transport::SMTP->new
-                    ({
-                        host => $Conf::smtp_host,
-                        port => $Conf::smtp_port,
-                     }),
-            });
+                my $text = '';
+                foreach my $attr ('account_action_seq', 'block_time')
+                {
+                    $text .= sprintf("%s: %s\n", $attr, $action->{$attr});
+                }
+                
+                my $at = $action->{'action_trace'};
+                my $act = $at->{'act'};
+                
+                $text .= sprintf("%s: %s\n", 'trx_id', $at->{'trx_id'});
+                
+                $text .= sprintf("%s::%s => %s\n", $act->{'account'},
+                                 $act->{'name'},
+                                 $at->{'receipt'}{'receiver'});
+                
+                $text .= $jswriter->encode($act->{'data'}) . "\n";
+                
+                $body .= $text . "\n";
+            }
+            
+            my $message = Email::MIME->create(
+                header_str => [
+                    From => $Conf::smtp_from,
+                    To => $mailto,
+                    Subject => 'New transactions for ' . $account,
+                ],
+                parts => [ $body ],
+                );
+            
+            my $outfile = $Conf::workdir . '/' . $account . '_' . $mailto .
+                '_' . time();
+            my $fh = IO::File->new($outfile, 'w') or
+                die("Cannot write to $outfile: $!");
+            $fh->print($message->as_string());
+            $fh->close();
+            verbose("Saved a copy to $outfile");
+            
+            sendmail(
+                $message,
+                {
+                    from => $Conf::smtp_from,
+                    to => $mailto,
+                    transport => Email::Sender::Transport::SMTP->new
+                        ({
+                            host => $Conf::smtp_host,
+                            port => $Conf::smtp_port,
+                         }),
+                });
+        }
     }
 }
         

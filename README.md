@@ -45,7 +45,8 @@ It should define the following elements:
 
 * `@Conf::watchlist`: the list of EOS account names and correspondig
   email addresses for notifications. Each entry is a hash with keys
-  `account_name` and `notify_email`.
+  `account_name` and `notify_email`. The `notify_email` entry can point
+  to an individual address, or to an array of email addresses.
 
 * the file should end with `1;` to keep Perl happy.
 
