@@ -12,7 +12,12 @@ $Conf::smtp_from = 'eosaccwatch@domain.com';
      {
          'account_name' => 'd34rffewvw4456',
          'notify_email' => 'bob@example.com',
-     },     
+     },
+     {
+         'account_name' => 'watchdoggiee',
+         'watch_contract' => 1,
+         'notify_email' => 'bob@example.com',
+     },
     );
 
 1;

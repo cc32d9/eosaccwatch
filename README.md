@@ -9,7 +9,7 @@ Packages required for Ubuntu or Debian:
 
 ```
 apt-get install -y libjson-xs-perl libredis-perl libjson-perl \
- libwww-perl liblwp-protocol-https-perl \
+ libwww-perl liblwp-protocol-https-perl libdigest-sha-perl \
  libemail-sender-perl libemail-mime-perl \
  postfix redis-server
 
@@ -46,7 +46,10 @@ It should define the following elements:
 * `@Conf::watchlist`: the list of EOS account names and correspondig
   email addresses for notifications. Each entry is a hash with keys
   `account_name` and `notify_email`. The `notify_email` entry can point
-  to an individual address, or to an array of email addresses.
+  to an individual address, or to an array of email addresses. If an
+  entry has a key `watch_contract` with value `1`, this account is only
+  monitored for contract code changes, and all other transactions are
+  ignored.
 
 * the file should end with `1;` to keep Perl happy.
 

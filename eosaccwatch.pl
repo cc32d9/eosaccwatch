@@ -20,6 +20,7 @@ use warnings;
 use Getopt::Long;
 use JSON;
 use Redis;
+use Digest::SHA ('sha256_hex');
 use LWP::UserAgent;
 use HTTP::Request;
 use File::Copy;
@@ -34,8 +35,8 @@ my $verbose;
     my $ok = GetOptions
         ('cfg=s'      => \$cfgfile,
          'verbose'    => \$verbose);
-    
-    
+
+
     if( not $ok or not $cfgfile or scalar(@ARGV) > 0 )
     {
         error("Usage: $0 --cfg=CFGFILE",
@@ -50,7 +51,7 @@ my $verbose;
 
 $Conf::redis_server = '127.0.0.1:6379';
 $Conf::redis_accounts_last_seq = 'eosaccwatch_last_seq';
-    
+
 $Conf::smtp_host = 'localhost';
 $Conf::smtp_port = 25;
 $Conf::smtp_from = 'eosaddrwatch@example.com';
@@ -118,7 +119,7 @@ $ua->env_proxy;
         error("Content at $url is not a valid JSON: $content");
         exit 1;
     }
-        
+
     if( not defined($data->{'server_version'}) )
     {
         error("$url returned invalid data $content");
@@ -136,19 +137,19 @@ sub get_actions
     my $offset = shift;
 
     verbose("get_actions acc=$account pos=$pos offset=$offset");
-    
+
     my $url = $Conf::rpcurl . '/v1/history/get_actions';
 
     my $req = HTTP::Request->new('POST', $url);
     $req->header('Content-Type' => 'application/json');
-    
+
     $req->content(encode_json(
                       {
                           'account_name' => $account,
                           'pos' => $pos,
                           'offset' => $offset,
                       }));
-    
+
     my $resp = $ua->request($req);
     if( not $resp->is_success )
     {
@@ -166,7 +167,7 @@ sub get_actions
     {
         die("RPC result does not contain a list of actions: $content");
     }
-    
+
     if( scalar(@{$data->{'actions'}}) == 0 )
     {
         die("Empty list of actions for $account");
@@ -178,7 +179,7 @@ sub get_actions
 
 
 my $jswriter = JSON->new()->utf8(1)->canonical(1)->pretty(1);
-    
+
 
 my $n = 0;
 
@@ -203,7 +204,7 @@ foreach my $entry (@Conf::watchlist)
 
     my $last_known_seq =
         $redis->hget($Conf::redis_accounts_last_seq, $account);
-    
+
     my @new_actions;
 
     my $last_action = eval { get_actions($account, -1, -1) };
@@ -213,9 +214,9 @@ foreach my $entry (@Conf::watchlist)
         error($@);
         next;
     }
-    
+
     my $last_seq = $last_action->[0]->{'account_action_seq'};
-    
+
     if( defined($last_known_seq) )
     {
         if( $last_seq == $last_known_seq )
@@ -243,15 +244,15 @@ foreach my $entry (@Conf::watchlist)
         {
             my $rcount = $last_seq - $seq;
             $rcount = 50 if $rcount > 50;
-            
+
             my $acts = eval { get_actions($account, $seq, $rcount) };
-            
+
             if( $@ )
             {
                 error($@);
                 next;
             }
-            
+
             foreach my $action (@{$acts})
             {
                 push(@new_actions, $action);
@@ -264,10 +265,10 @@ foreach my $entry (@Conf::watchlist)
     }
 
     $redis->hset($Conf::redis_accounts_last_seq, $account, $seq);
-        
+
     verbose('Found ' . scalar(@new_actions) .
             ' new transactions for ' . $account);
-    notify_owner($entry, \@new_actions);
+    send_notifications($entry, \@new_actions);
 }
 
 
@@ -298,7 +299,7 @@ if( $Conf::use_git )
             error('Error executing $cmd: ' . $!);
         }
     }
-    
+
     if( $ok )
     {
         my $timestr = scalar(localtime(time()));
@@ -314,12 +315,39 @@ if( $Conf::use_git )
 
 
 
-sub notify_owner
+sub send_notifications
 {
     my $entry = shift;
     my $actions = shift;
 
     my $account = $entry->{'account_name'};
+
+    my $watch_contract = $entry->{'watch_contract'};
+    my @set_code_actions;
+
+    if( $watch_contract ) # watch only contract uploads
+    {
+        foreach my $action (@{$actions})
+        {
+            my $at = $action->{'action_trace'};
+            my $act = $at->{'act'};
+            if( $act->{'account'} eq 'eosio' and $act->{'name'} eq 'setcode' )
+            {
+                push(@set_code_actions, $action);
+            }
+        }
+
+        verbose('Found ' . scalar(@set_code_actions) .
+                ' setcode transactions for ' . $account);
+        
+        if( scalar(@set_code_actions) == 0 )
+        {
+            verbose("$account is a contract account and we have not " .
+                    "found any setcode transactions");
+            return;
+        }
+    }
+
     if( defined($entry->{'notify_email'}) )
     {
         my @tos;
@@ -332,16 +360,52 @@ sub notify_owner
             push(@tos, $entry->{'notify_email'});
         }
 
-        foreach my $mailto (@tos)
-        {
-            verbose("Sending a notification to $mailto");
+        my $body ='';
+        my $subject;
 
-            my $body = join
+        if( $watch_contract )
+        {
+            $subject = "Code changes detected in contract $account";
+            $body .= join
+            ("\n",
+             'There are ' . scalar(@set_code_actions) .
+             ' new setcode transactions for account ' . $account . ':',
+             '', '');
+
+            foreach my $action (@set_code_actions)
+            {
+                my $text = '';
+                foreach my $attr ('account_action_seq', 'block_time')
+                {
+                    $text .= sprintf("%s: %s\n", $attr, $action->{$attr});
+                }
+
+                my $at = $action->{'action_trace'};
+                my $act = $at->{'act'};
+
+                $text .= sprintf("%s: %s\n", 'trx_id', $at->{'trx_id'});
+
+                $text .= sprintf("%s::%s => %s\n", $act->{'account'},
+                                 $act->{'name'},
+                                 $at->{'receipt'}{'receiver'});
+
+                my $code = pack('H*', $act->{'data'}{'code'});
+                my $code_hash = sha256_hex($code);
+                verbose('Code hash: ' . $code_hash);
+                $text .= sprintf("code hash: %s\n", $code_hash);
+
+                $body .= $text . "\n";
+            }
+        }
+        else
+        {
+            $subject = 'New transactions for ' . $account;
+            $body .= join
                 ("\n",
                  'There are ' . scalar(@{$actions}) .
                  ' new transactions for account ' . $account . ':',
                  '', '');
-            
+
             foreach my $action (@{$actions})
             {
                 my $text = '';
@@ -349,30 +413,35 @@ sub notify_owner
                 {
                     $text .= sprintf("%s: %s\n", $attr, $action->{$attr});
                 }
-                
+
                 my $at = $action->{'action_trace'};
                 my $act = $at->{'act'};
-                
+
                 $text .= sprintf("%s: %s\n", 'trx_id', $at->{'trx_id'});
-                
+
                 $text .= sprintf("%s::%s => %s\n", $act->{'account'},
                                  $act->{'name'},
                                  $at->{'receipt'}{'receiver'});
-                
+
                 $text .= $jswriter->encode($act->{'data'}) . "\n";
-                
+
                 $body .= $text . "\n";
             }
-            
+        }
+
+        foreach my $mailto (@tos)
+        {
+            verbose("Sending a notification to $mailto");
+
             my $message = Email::MIME->create(
                 header_str => [
                     From => $Conf::smtp_from,
                     To => $mailto,
-                    Subject => 'New transactions for ' . $account,
+                    Subject => $subject,
                 ],
                 parts => [ $body ],
                 );
-            
+
             my $outfile = $Conf::workdir . '/' . $account . '_' . $mailto .
                 '_' . time();
             my $fh = IO::File->new($outfile, 'w') or
@@ -380,7 +449,7 @@ sub notify_owner
             $fh->print($message->as_string());
             $fh->close();
             verbose("Saved a copy to $outfile");
-            
+
             sendmail(
                 $message,
                 {
@@ -395,11 +464,11 @@ sub notify_owner
         }
     }
 }
-        
 
-        
 
-        
+
+
+
 sub error
 {
     print STDERR (join("\n", @_), "\n");
