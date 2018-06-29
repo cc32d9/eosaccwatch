@@ -19,10 +19,9 @@ use strict;
 use warnings;
 use Getopt::Long;
 use JSON;
+use Redis;
 use LWP::UserAgent;
 use HTTP::Request;
-use IO::File;
-use Digest::SHA ('sha256_hex');
 use File::Copy;
 use Email::Sender::Simple qw(sendmail);
 use Email::Sender::Transport::SMTP qw();
@@ -48,7 +47,10 @@ my $verbose;
 }
 
 
-$Conf::n_receive_transactions = 20;
+
+$Conf::redis_server = '127.0.0.1:6379';
+$Conf::redis_accounts_last_seq = 'eosaccwatch_last_seq';
+    
 $Conf::smtp_host = 'localhost';
 $Conf::smtp_port = 25;
 $Conf::smtp_from = 'eosaddrwatch@example.com';
@@ -91,6 +93,11 @@ if( scalar(@Conf::watchlist) == 0 )
     exit 1;
 }
 
+
+my $redis = Redis->new(server => $Conf::redis_server);
+die("Cannot connect to Redis server") unless defined($redis);
+
+
 my $ua = LWP::UserAgent->new(keep_alive => 1);
 $ua->timeout(5);
 $ua->env_proxy;
@@ -122,12 +129,56 @@ $ua->env_proxy;
             'server_version=' . $data->{'server_version'});
 }
 
+sub get_actions
+{
+    my $account = shift;
+    my $pos = shift;
+    my $offset = shift;
+
+    verbose("get_actions acc=$account pos=$pos offset=$offset");
+    
+    my $url = $Conf::rpcurl . '/v1/history/get_actions';
+
+    my $req = HTTP::Request->new('POST', $url);
+    $req->header('Content-Type' => 'application/json');
+    
+    $req->content(encode_json(
+                      {
+                          'account_name' => $account,
+                          'pos' => $pos,
+                          'offset' => $offset,
+                      }));
+    
+    my $resp = $ua->request($req);
+    if( not $resp->is_success )
+    {
+        die("Cannot retrieve transactions for account $account");
+    }
+
+    my $content = $resp->decoded_content;
+    my $data = eval { decode_json($content) };
+    if( $@ )
+    {
+        die("Content at $url is not a valid JSON: $content");
+    }
+
+    if( not defined($data->{'actions'}) )
+    {
+        die("RPC result does not contain a list of actions: $content");
+    }
+    
+    if( scalar(@{$data->{'actions'}}) == 0 )
+    {
+        die("Empty list of actions for $account");
+    }
+
+    verbose('got ' . scalar(@{$data->{'actions'}}));
+    return $data->{'actions'};
+}
+
 
 my $jswriter = JSON->new()->utf8(1)->canonical(1)->pretty(1);
     
-
-my $url = $Conf::rpcurl . '/v1/history/get_actions';
-my $offset = -1 * $Conf::n_receive_transactions;
 
 my $n = 0;
 
@@ -136,7 +187,7 @@ foreach my $entry (@Conf::watchlist)
     $n++;
 
     my $ok = 1;
-    foreach my $attr ('account_name', 'notify_email')
+    foreach my $attr ('account_name')
     {
         if( not defined($entry->{$attr}) )
         {
@@ -150,77 +201,73 @@ foreach my $entry (@Conf::watchlist)
     my $account = $entry->{'account_name'};
     verbose("Checking account: $account");
 
-    my $req = HTTP::Request->new('POST', $url);
-    $req->header('Content-Type' => 'application/json');
+    my $last_known_seq =
+        $redis->hget($Conf::redis_accounts_last_seq, $account);
     
-    $req->content(encode_json({'account_name' => $account,
-                               'offset' => $offset}));
-    
-    my $resp = $ua->request($req);
-    if( not $resp->is_success )
-    {
-        error("Cannot retrieve transactions for account $account");
-        next;
-    }
+    my @new_actions;
 
-    my $content = $resp->decoded_content;
-    my $data = eval { decode_json($content) };
+    my $last_action = eval { get_actions($account, -1, -1) };
+
     if( $@ )
     {
-        error("Content at $url is not a valid JSON: $content");
-        next;
-    }
-
-    if( not defined($data->{'actions'}) )
-    {
-        error("RPC result does not contain a list of actions: $content");
+        error($@);
         next;
     }
     
-    if( scalar(@{$data->{'actions'}}) == 0 )
-    {
-        error("Empty list of actions for $account");
-        next;
-    }
-
-    # https://github.com/EOSIO/eos/issues/4319
-    # don't know why, but "elapsed" is varying in time
-    foreach my $action (@{$data->{'actions'}})
-    {
-        delete $action->{'action_trace'}{'elapsed'};
-    }
-        
-    my $jscontent = $jswriter->encode($data->{'actions'});
-    my $jscontent_sha = sha256_hex($jscontent);
+    my $last_seq = $last_action->[0]->{'account_action_seq'};
     
-    my $outfile = $Conf::workdir . '/' . $account;
-
-    if( -e $outfile )
+    if( defined($last_known_seq) )
     {
-        my $sha = Digest::SHA->new(256);
-        $sha->addfile($outfile);
-        my $old_sha = $sha->hexdigest();
-
-        if( $old_sha eq $jscontent_sha )
+        if( $last_seq == $last_known_seq )
         {
             verbose("Nothing changed for $account");
             next;
         }
-        else
-        {
-            verbose("Found new transactions for $account");
-            notify_owner($entry, $data->{'actions'});
-        }
     }
     else
     {
-        verbose("Account $account is new for us. Saving the transactions");
+        verbose("Account $account is new for us. Saving the transaction count");
+        $redis->hset($Conf::redis_accounts_last_seq, $account, $last_seq);
+        next;
     }
 
-    my $fh = IO::File->new($outfile, 'w') or
-        die("Cannot write to $outfile: $!");
-    $fh->print($jscontent);
-    $fh->close();
+    my $seq = $last_known_seq + 1;
+
+    if( $seq == $last_seq )
+    {
+        push(@new_actions, $last_action->[0]);
+    }
+    else
+    {
+        while( $seq < $last_seq )
+        {
+            my $rcount = $last_seq - $seq;
+            $rcount = 50 if $rcount > 50;
+            
+            my $acts = eval { get_actions($account, $seq, $rcount) };
+            
+            if( $@ )
+            {
+                error($@);
+                next;
+            }
+            
+            foreach my $action (@{$acts})
+            {
+                push(@new_actions, $action);
+                if( $action->{'account_action_seq'} > $seq )
+                {
+                    $seq = $action->{'account_action_seq'};
+                }
+            }
+        }
+    }
+
+    $redis->hset($Conf::redis_accounts_last_seq, $account, $seq);
+        
+    verbose('Found ' . scalar(@new_actions) .
+            ' new transactions for ' . $account);
+    notify_owner($entry, \@new_actions);
 }
 
 
@@ -280,13 +327,11 @@ sub notify_owner
 
         my $body = join
             ("\n",
-             'There are new transactions for account ' . $account . '.',
-             '',
-             'Here is the list of last ' . $Conf::n_receive_transactions .
-             ' transactions:',
+             'There are ' . scalar(@{$actions}) .
+             ' new transactions for account ' . $account . ':',
              '', '');
-
-        foreach my $action (reverse @{$actions})
+        
+        foreach my $action (@{$actions})
         {
             my $text = '';
             foreach my $attr ('account_action_seq', 'block_time')
