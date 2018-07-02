@@ -3,6 +3,12 @@
 This tool is watching transactions for EOS accounts, and sends an email
 alert whenever new transactions are seen in the network.
 
+The tool requires an RPC URL of an EOS node that has the history plugin
+enabled and is using wildcard filter. Most of BP nodes do not support
+this feature. Here you can find instructions for building your own node
+for this purpose: https://bit.ly/2NldDaL
+
+
 ## Installing the software
 
 Packages required for Ubuntu or Debian:
