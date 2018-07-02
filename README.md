@@ -35,9 +35,9 @@ folder in your home directory.
 
 It should define the following elements:
 
-* `$Conf::rpcurl`: the URL to one of working nodes in the network. Any
-  of BP or BP Candidates should be fine. You can see this URL at the
-  BP's home URL if you add `/bp.json` to it.
+* `$Conf::rpcurl`: the URL to a `nodeos` node in the network with
+  enabled history plugin and wildcard filter enabled. Most BP's do not
+  have that enabled.
 
 * `$Conf::workdir`: the working directory where the tool keeps its state
   information. `var/eosaccwatch` in your home directory is a good
