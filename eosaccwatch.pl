@@ -224,6 +224,11 @@ foreach my $entry (@Conf::watchlist)
             verbose("Nothing changed for $account");
             next;
         }
+        elsif( $last_seq < $last_known_seq )
+        {
+            verbose("Account history is outdated on RPC server for $account");
+            next;
+        }
     }
     else
     {
